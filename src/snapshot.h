@@ -17,11 +17,11 @@
 
 struct RadMassVel_t
 {
-  HBTReal r, m, v; 
+  HBTReal index, r, m, v;
   RadMassVel_t(){};
-  RadMassVel_t(HBTReal r, HBTReal m):r(r), m(m)
+  RadMassVel_t(HBTInt index, HBTReal r, HBTReal m): index(index), r(r), m(m)
   {}
-  RadMassVel_t(HBTReal r, HBTReal m, HBTReal v):r(r),m(m),v(v)
+  RadMassVel_t(HBTInt index, HBTReal r, HBTReal m, HBTReal v): index(index), r(r),m(m),v(v)
   {}
 };
   

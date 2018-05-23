@@ -13,7 +13,7 @@
 
 #define RMAX 2.
 
-// #define NBIN 10  //define this to also compute a count profile; the first bin is [0, 1e-2)*Rvir and the remaining bins are logspaced between [1e-2,1)*Rvir
+#define NBIN 20  //define this to also compute a count profile; the first bin is [0, 1e-2)*Rmax and the remaining bins are logspaced between [1e-2,1)*Rmax
 #ifdef NBIN
 float Dlnx=(0-(-2.))/(NBIN-1); //1e-2 to 1, logspace
 #endif
@@ -24,6 +24,8 @@ struct HaloSize_t
 {
   HBTInt HaloId;
   HBTxyz CenterComoving;
+  HBTxyz ComovingAveragePosition;
+  float CenterOffset;
   float MVir, M200Crit, M200Mean, RVirComoving, R200CritComoving, R200MeanComoving;
   float RmaxComoving, VmaxPhysical;
 #ifdef NBIN
@@ -33,6 +35,8 @@ struct HaloSize_t
   void fill_zeros()
   {
     CenterComoving[0]=CenterComoving[1]=CenterComoving[2]=0.;
+    ComovingAveragePosition[0]=ComovingAveragePosition[1]=ComovingAveragePosition[2]=0.;
+    CenterOffset=0.;
     MVir=0.;
     M200Crit=0.;
     M200Mean=0.;
@@ -108,8 +112,8 @@ int main(int argc, char **argv)
       auto &subgroup=subsnap.MemberTable.SubGroups[grpid];
       if(subgroup.size()==0)
       {
-	HaloSize[grpid].fill_zeros();
-	continue;
+        HaloSize[grpid].fill_zeros();
+        continue;
       }
       HBTInt np=halosnap.Halos[grpid].size();
       float rmax=ComovingMean200Radius(np*Cosmology.ParticleMass, Cosmology.OmegaM0)*RMAX;//use b200 as a ref
@@ -132,7 +136,7 @@ public:
   }
   void Collect(HBTInt index, HBTReal d2)
   {
-    Prof.emplace_back(sqrt(d2), PartSnap.GetMass(index));
+    Prof.emplace_back(index, sqrt(d2), PartSnap.GetMass(index));
   }
 };
 void HaloSize_t::Compute(HBTxyz &cen, float rmax, HBTInt nguess, Linkedlist_t &ll, const ParticleSnapshot_t &partsnap)
@@ -145,35 +149,42 @@ void HaloSize_t::Compute(HBTxyz &cen, float rmax, HBTInt nguess, Linkedlist_t &l
     sort(prof.begin(), prof.end(), CompProfRadius);
     double m_cum=0.;
     for(auto && p: prof)  p.m=(m_cum+=p.m);
+    ComovingAveragePosition[0] = ComovingAveragePosition[1] = ComovingAveragePosition[2] = 0.;
     for(HBTInt i=0;i<np;i++)
     {
-	    if(prof[i].r<HBTConfig.SofteningHalo) prof[i].r=HBTConfig.SofteningHalo; //resolution
-	    prof[i].v=prof[i].m/prof[i].r;//v**2
+      for(int j=0;j<3;j++)
+        ComovingAveragePosition[j] += partsnap.GetComovingPosition(prof[i].index)[j];
+      if(prof[i].r<HBTConfig.SofteningHalo) prof[i].r=HBTConfig.SofteningHalo; //resolution
+      prof[i].v=prof[i].m/prof[i].r; //v**2
     }
-   
+    for(int j=0;j<3;j++)
+      ComovingAveragePosition[j] = ComovingAveragePosition[j] / (float)np;
+
     partsnap.Cosmology.SphericalOverdensitySize(MVir, RVirComoving, virialF_tophat, prof);
     partsnap.Cosmology.SphericalOverdensitySize(M200Crit, R200CritComoving, virialF_c200, prof);
     partsnap.Cosmology.SphericalOverdensitySize(M200Mean, R200MeanComoving, virialF_b200, prof);
-    
+
+    CenterOffset = Distance(CenterComoving, ComovingAveragePosition) / R200CritComoving;
+
     auto it_rv=lower_bound(prof.begin(), prof.end(), R200CritComoving, CompProfRadiusVal);
     auto maxprof=max_element(prof.begin(), it_rv, CompProfVel);//restrict Rmax<R200C
     RmaxComoving=maxprof->r;
     VmaxPhysical=sqrt(maxprof->v*VelocityUnit);
-    
+
 #ifdef NBIN
     fill(begin(Profile), end(Profile), 0);
-    float r0=1e-2*RVirComoving;
+    float r0=1e-2*R200CritComoving;
     for(auto &&p: prof)
     {
-      if(p.r<RVirComoving)
+      if(p.r<R200CritComoving)
       {
-	float logr=log10f(p.r/r0);
-	int ibin=ceilf(log10f(p.r/r0)/Dlnx); //1 to NBIN-1 from r0 to rvir
-	if(ibin<0) 
-	  ibin=0;
-	else if(ibin>=NBIN) 
-	  ibin=NBIN-1;
-	Profile[ibin]++;
+        float logr=log10f(p.r/r0);
+        int ibin=ceilf(log10f(p.r/r0)/Dlnx); //1 to NBIN-1 from r0 to rmax
+        if(ibin<0)
+          ibin=0;
+        else if(ibin>=NBIN)
+          ibin=NBIN-1;
+        Profile[ibin]++;
       }
     }
 #endif
@@ -207,6 +218,8 @@ void BuildHDFHaloSize(hid_t &H5T_dtypeInMem, hid_t &H5T_dtypeInDisk)
   #define InsertMember(x,t) H5Tinsert(H5T_dtypeInMem, #x, HOFFSET(HaloSize_t, x), t)//;cout<<#x<<": "<<HOFFSET(HaloSize_t, x)<<endl
   InsertMember(HaloId, H5T_HBTInt);
   InsertMember(CenterComoving, H5T_HBTxyz);
+  InsertMember(ComovingAveragePosition, H5T_HBTxyz);
+  InsertMember(CenterOffset, H5T_NATIVE_FLOAT);
   InsertMember(R200CritComoving, H5T_NATIVE_FLOAT);
   InsertMember(R200MeanComoving, H5T_NATIVE_FLOAT);
   InsertMember(RVirComoving, H5T_NATIVE_FLOAT);
@@ -221,7 +234,7 @@ void BuildHDFHaloSize(hid_t &H5T_dtypeInMem, hid_t &H5T_dtypeInDisk)
   InsertMember(Profile, H5T_HBTIntVec);
   H5Tclose(H5T_HBTIntVec);
 #endif
-  #undef InsertMember	
+  #undef InsertMember
 
   H5T_dtypeInDisk=H5Tcopy(H5T_dtypeInMem);
   H5Tpack(H5T_dtypeInDisk); //clear fields not added to save disk space
